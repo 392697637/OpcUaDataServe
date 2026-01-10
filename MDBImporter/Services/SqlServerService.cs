@@ -325,11 +325,6 @@ namespace MDBImporter.Services
                 SELECT TABLE_NAME 
                 FROM INFORMATION_SCHEMA.TABLES 
                 WHERE TABLE_TYPE = 'BASE TABLE' 
-                AND (
-                    TABLE_NAME LIKE '%[_]%[_]%' OR  -- 包含两个下划线的表
-                    TABLE_NAME LIKE 'MDB[_]%' OR    -- 以MDB_开头的表
-                    TABLE_NAME LIKE 'COMPUTER%[_]%'  -- 以COMPUTER开头的表
-                )
                 AND TABLE_NAME NOT IN ('ImportHistory')  -- 排除历史表
                 ORDER BY TABLE_NAME";
 
@@ -408,11 +403,6 @@ namespace MDBImporter.Services
                 SELECT TABLE_NAME 
                 FROM INFORMATION_SCHEMA.TABLES 
                 WHERE TABLE_TYPE = 'BASE TABLE' 
-                AND (
-                    TABLE_NAME LIKE '%[_]%[_]%' OR
-                    TABLE_NAME LIKE 'MDB[_]%' OR
-                    TABLE_NAME LIKE 'COMPUTER%[_]%'
-                )
                 AND TABLE_NAME NOT IN ('ImportHistory')
                 ORDER BY TABLE_NAME";
 
@@ -502,11 +492,6 @@ namespace MDBImporter.Services
                 GROUP BY TableName
             ) h ON t.name = h.TableName
             WHERE t.is_ms_shipped = 0
-            AND (
-                t.name LIKE '%[_]%[_]%' OR
-                t.name LIKE 'MDB[_]%' OR
-                t.name LIKE 'COMPUTER%[_]%'
-            )
             AND t.name NOT IN ('ImportHistory')
             GROUP BY t.name, p.rows
             ORDER BY TableType, TableName";
@@ -530,11 +515,6 @@ namespace MDBImporter.Services
             SELECT COUNT(*) 
             FROM INFORMATION_SCHEMA.TABLES 
             WHERE TABLE_TYPE = 'BASE TABLE' 
-            AND (
-                TABLE_NAME LIKE '%[_]%[_]%' OR
-                TABLE_NAME LIKE 'MDB[_]%' OR
-                TABLE_NAME LIKE 'COMPUTER%[_]%'
-            )
             AND TABLE_NAME NOT IN ('ImportHistory')";
 
                 try

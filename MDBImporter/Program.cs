@@ -436,8 +436,7 @@ namespace MDBImporter
                     SELECT TABLE_NAME 
                     FROM INFORMATION_SCHEMA.TABLES 
                     WHERE TABLE_TYPE = 'BASE TABLE' 
-                    AND TABLE_NAME NOT IN ('ImportHistory')
-                    AND (TABLE_NAME LIKE '%[_]%[_]%' OR TABLE_NAME LIKE 'MDB_%')";
+                    AND TABLE_NAME NOT IN ('ImportHistory')";
 
                 using var command = new SqlCommand(sql, connection);
                 using var reader = await command.ExecuteReaderAsync();
