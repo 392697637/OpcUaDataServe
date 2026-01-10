@@ -190,8 +190,8 @@ namespace MDBImporter.Services
             using var bulkCopy = new SqlBulkCopy(sqlConnection)
             {
                 DestinationTableName = tableName,
-                BatchSize = 1000,
-                BulkCopyTimeout = 300
+                BatchSize = 1000,  // ← 批次大小
+                BulkCopyTimeout = 300  // ← 超时时间（秒）
             };
 
             // 映射列 - 从reader获取列信息

@@ -305,8 +305,326 @@ namespace MDBImporter.Services
             }
         }
 
-        // 检查表是否存在
-        public async Task<bool> TableExistsAsync(string tableName)
+
+     
+
+            // 删除所有导入的表
+            public async Task<int> DeleteAllImportTablesAsync()
+            {
+                var deletedCount = 0;
+
+                try
+                {
+                    _logger.LogInformation("开始删除所有导入的表...");
+
+                    using var connection = new SqlConnection(_connectionString);
+                    await connection.OpenAsync();
+
+                    // 获取所有导入的表（根据命名模式）
+                    var sql = @"
+                SELECT TABLE_NAME 
+                FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_TYPE = 'BASE TABLE' 
+                AND (
+                    TABLE_NAME LIKE '%[_]%[_]%' OR  -- 包含两个下划线的表
+                    TABLE_NAME LIKE 'MDB[_]%' OR    -- 以MDB_开头的表
+                    TABLE_NAME LIKE 'COMPUTER%[_]%'  -- 以COMPUTER开头的表
+                )
+                AND TABLE_NAME NOT IN ('ImportHistory')  -- 排除历史表
+                ORDER BY TABLE_NAME";
+
+                    var tablesToDelete = new List<string>();
+
+                    using (var command = new SqlCommand(sql, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            tablesToDelete.Add(reader["TABLE_NAME"].ToString());
+                        }
+                    }
+
+                    if (tablesToDelete.Count == 0)
+                    {
+                        _logger.LogInformation("没有找到要删除的导入表");
+                        return 0;
+                    }
+
+                    _logger.LogInformation($"找到 {tablesToDelete.Count} 个导入表需要删除");
+
+                    // 禁用外键约束（如果需要）
+                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
+
+                    // 删除表
+                    foreach (var table in tablesToDelete)
+                    {
+                        try
+                        {
+                            var dropSql = $"DROP TABLE [{table}]";
+                            using var dropCommand = new SqlCommand(dropSql, connection);
+                            await dropCommand.ExecuteNonQueryAsync();
+
+                            deletedCount++;
+                            _logger.LogInformation($"已删除表: {table}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"删除表失败 {table}");
+                        }
+                    }
+
+                    // 重新启用外键约束
+                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
+
+                    _logger.LogInformation($"删除完成，共删除 {deletedCount} 个表");
+
+                    // 记录删除历史
+                    await LogImportHistoryAsync("SYSTEM", "ALL_TABLES", 0, "Deleted",
+                        $"删除了 {deletedCount} 个导入表", "SystemOperation", 0, 0);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "删除所有导入表失败");
+                    throw;
+                }
+
+                return deletedCount;
+            }
+
+            // 清空所有导入的表（只清空数据，保留表结构）
+            public async Task<int> TruncateAllImportTablesAsync()
+            {
+                var truncatedCount = 0;
+
+                try
+                {
+                    _logger.LogInformation("开始清空所有导入的表...");
+
+                    using var connection = new SqlConnection(_connectionString);
+                    await connection.OpenAsync();
+
+                    // 获取所有导入的表
+                    var sql = @"
+                SELECT TABLE_NAME 
+                FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_TYPE = 'BASE TABLE' 
+                AND (
+                    TABLE_NAME LIKE '%[_]%[_]%' OR
+                    TABLE_NAME LIKE 'MDB[_]%' OR
+                    TABLE_NAME LIKE 'COMPUTER%[_]%'
+                )
+                AND TABLE_NAME NOT IN ('ImportHistory')
+                ORDER BY TABLE_NAME";
+
+                    var tablesToTruncate = new List<string>();
+
+                    using (var command = new SqlCommand(sql, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            tablesToTruncate.Add(reader["TABLE_NAME"].ToString());
+                        }
+                    }
+
+                    if (tablesToTruncate.Count == 0)
+                    {
+                        _logger.LogInformation("没有找到要清空的导入表");
+                        return 0;
+                    }
+
+                    _logger.LogInformation($"找到 {tablesToTruncate.Count} 个导入表需要清空");
+
+                    // 禁用外键约束
+                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
+
+                    // 清空表
+                    foreach (var table in tablesToTruncate)
+                    {
+                        try
+                        {
+                            var truncateSql = $"TRUNCATE TABLE [{table}]";
+                            using var truncateCommand = new SqlCommand(truncateSql, connection);
+                            await truncateCommand.ExecuteNonQueryAsync();
+
+                            truncatedCount++;
+                            _logger.LogInformation($"已清空表: {table}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"清空表失败 {table}");
+                        }
+                    }
+
+                    // 重新启用外键约束
+                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
+
+                    _logger.LogInformation($"清空完成，共清空 {truncatedCount} 个表");
+
+                    // 记录清空历史
+                    await LogImportHistoryAsync("SYSTEM", "ALL_TABLES", 0, "Truncated",
+                        $"清空了 {truncatedCount} 个导入表", "SystemOperation", 0, 0);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "清空所有导入表失败");
+                    throw;
+                }
+
+                return truncatedCount;
+            }
+
+            // 获取导入表的统计信息
+            public async Task<DataTable> GetImportTablesStatisticsAsync()
+            {
+                var sql = @"
+            SELECT 
+                t.name AS TableName,
+                p.rows AS RowCounts,
+                SUM(a.total_pages) * 8 AS TotalSpaceKB,
+                SUM(a.used_pages) * 8 AS UsedSpaceKB,
+                MAX(h.ImportTime) AS LastImportTime,
+                SUM(h.RecordsImported) AS TotalImported,
+                CASE 
+                    WHEN t.name LIKE '%[_]%[_]%' THEN 'MDB导入表'
+                    WHEN t.name LIKE 'MDB[_]%' THEN 'MDB导入表'
+                    WHEN t.name LIKE 'COMPUTER%[_]%' THEN '计算机导入表'
+                    ELSE '其他表'
+                END AS TableType
+            FROM sys.tables t
+            LEFT JOIN sys.indexes i ON t.object_id = i.object_id
+            LEFT JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+            LEFT JOIN sys.allocation_units a ON p.partition_id = a.container_id
+            LEFT JOIN (
+                SELECT TableName, MAX(ImportTime) as ImportTime, SUM(RecordsImported) as RecordsImported
+                FROM ImportHistory 
+                WHERE Status = 'Success'
+                GROUP BY TableName
+            ) h ON t.name = h.TableName
+            WHERE t.is_ms_shipped = 0
+            AND (
+                t.name LIKE '%[_]%[_]%' OR
+                t.name LIKE 'MDB[_]%' OR
+                t.name LIKE 'COMPUTER%[_]%'
+            )
+            AND t.name NOT IN ('ImportHistory')
+            GROUP BY t.name, p.rows
+            ORDER BY TableType, TableName";
+
+                using var connection = new SqlConnection(_connectionString);
+                using var command = new SqlCommand(sql, connection);
+                using var adapter = new SqlDataAdapter(command);
+                var dataTable = new DataTable();
+
+                await connection.OpenAsync();
+                adapter.Fill(dataTable);
+
+                _logger.LogInformation("获取导入表统计: {Count}个表", dataTable.Rows.Count);
+                return dataTable;
+            }
+
+            // 检查是否有导入表
+            public async Task<bool> HasImportTablesAsync()
+            {
+                var sql = @"
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_TYPE = 'BASE TABLE' 
+            AND (
+                TABLE_NAME LIKE '%[_]%[_]%' OR
+                TABLE_NAME LIKE 'MDB[_]%' OR
+                TABLE_NAME LIKE 'COMPUTER%[_]%'
+            )
+            AND TABLE_NAME NOT IN ('ImportHistory')";
+
+                try
+                {
+                    using var connection = new SqlConnection(_connectionString);
+                    using var command = new SqlCommand(sql, connection);
+
+                    await connection.OpenAsync();
+                    var result = await command.ExecuteScalarAsync();
+
+                    return Convert.ToInt32(result) > 0;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "检查导入表是否存在失败");
+                    return false;
+                }
+            }
+
+            // 获取导入表的详细信息
+            public async Task<DataTable> GetImportTablesDetailsAsync()
+            {
+                var sql = @"
+            SELECT 
+                t.TABLE_NAME,
+                t.TABLE_TYPE,
+                c.COLUMN_COUNT,
+                r.ROW_COUNT,
+                h.LAST_IMPORT_TIME,
+                h.TOTAL_IMPORTED,
+                DATEDIFF(DAY, h.LAST_IMPORT_TIME, GETDATE()) AS DAYS_SINCE_IMPORT,
+                CASE 
+                    WHEN t.TABLE_NAME LIKE '%[_]%[_]%' THEN 'MDB导入表'
+                    WHEN t.TABLE_NAME LIKE 'MDB[_]%' THEN 'MDB导入表'
+                    WHEN t.TABLE_NAME LIKE 'COMPUTER%[_]%' THEN '计算机导入表'
+                    ELSE '其他表'
+                END AS IMPORT_TYPE,
+                SUBSTRING(t.TABLE_NAME, 1, 
+                    CASE 
+                        WHEN CHARINDEX('_', t.TABLE_NAME, CHARINDEX('_', t.TABLE_NAME) + 1) > 0 
+                        THEN CHARINDEX('_', t.TABLE_NAME, CHARINDEX('_', t.TABLE_NAME) + 1) - 1
+                        ELSE LEN(t.TABLE_NAME)
+                    END) AS PREFIX_INFO
+            FROM INFORMATION_SCHEMA.TABLES t
+            LEFT JOIN (
+                SELECT TABLE_NAME, COUNT(*) AS COLUMN_COUNT
+                FROM INFORMATION_SCHEMA.COLUMNS
+                GROUP BY TABLE_NAME
+            ) c ON t.TABLE_NAME = c.TABLE_NAME
+            LEFT JOIN (
+                SELECT 
+                    t.name AS TABLE_NAME,
+                    SUM(p.rows) AS ROW_COUNT
+                FROM sys.tables t
+                INNER JOIN sys.partitions p ON t.object_id = p.object_id
+                WHERE p.index_id IN (0, 1)
+                GROUP BY t.name
+            ) r ON t.TABLE_NAME = r.TABLE_NAME
+            LEFT JOIN (
+                SELECT 
+                    TableName,
+                    MAX(ImportTime) AS LAST_IMPORT_TIME,
+                    SUM(RecordsImported) AS TOTAL_IMPORTED
+                FROM ImportHistory
+                WHERE Status = 'Success'
+                GROUP BY TableName
+            ) h ON t.TABLE_NAME = h.TableName
+            WHERE t.TABLE_TYPE = 'BASE TABLE'
+            AND (
+                t.TABLE_NAME LIKE '%[_]%[_]%' OR
+                t.TABLE_NAME LIKE 'MDB[_]%' OR
+                t.TABLE_NAME LIKE 'COMPUTER%[_]%'
+            )
+            AND t.TABLE_NAME NOT IN ('ImportHistory')
+            ORDER BY t.TABLE_NAME";
+
+                using var connection = new SqlConnection(_connectionString);
+                using var command = new SqlCommand(sql, connection);
+                using var adapter = new SqlDataAdapter(command);
+                var dataTable = new DataTable();
+
+                await connection.OpenAsync();
+                adapter.Fill(dataTable);
+
+                return dataTable;
+            }
+
+
+            // 检查表是否存在
+            public async Task<bool> TableExistsAsync(string tableName)
         {
             var sql = @"
                 SELECT COUNT(*) 

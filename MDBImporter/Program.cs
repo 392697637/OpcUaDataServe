@@ -7,6 +7,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -79,26 +80,30 @@ namespace MDBImporter
 
             services.AddSingleton<IConfiguration>(configuration);
 
-            // 日志
+            // 日志 - 使用自定义格式
             services.AddLogging(builder =>
             {
-                builder.AddConsole();
+                builder.ClearProviders(); // 清除默认提供程序
+                builder.AddSimpleConsole(options =>
+                {
+                    options.TimestampFormat = "HH:mm:ss ";
+                    options.UseUtcTimestamp = false;
+                    options.IncludeScopes = false;
+                    options.SingleLine = true;
+                    options.ColorBehavior = LoggerColorBehavior.Enabled;
+                });
                 builder.SetMinimumLevel(LogLevel.Information);
                 builder.AddFilter("Microsoft", LogLevel.Warning);
                 builder.AddFilter("System", LogLevel.Warning);
             });
 
-            // 注册服务 - 使用正确的构造函数
+            // 注册服务
             services.AddSingleton<ConfigHelper>();
             services.AddSingleton<ProviderHelper>();
-            services.AddSingleton<SqlServerService>();  // 会使用接受IConfiguration的构造函数
+            services.AddSingleton<SqlServerService>();
             services.AddSingleton<MDBService>();
             services.AddSingleton<LogService>();
-
-            // 注册其他需要的服务
             services.AddSingleton<FileWatcherService>();
-
-            // Program本身需要的服务
             services.AddSingleton<Program>();
 
             _serviceProvider = services.BuildServiceProvider();
@@ -279,8 +284,8 @@ namespace MDBImporter
                         break;
                 }
 
-                Console.WriteLine("\n按任意键继续...");
-                Console.ReadKey();
+                //Console.WriteLine("\n按任意键继续...");
+                //Console.ReadKey();
             }
         }
 
