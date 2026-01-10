@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36221.1 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MDBToSQLServer", "MDBToSQLServer\MDBToSQLServer.csproj", "{175DF325-D830-447F-A26D-BF31BF52C821}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MDBImporter", "MDBImporter\MDBImporter.csproj", "{E655F5B1-AAB0-463D-859C-9874BCCA9970}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{175DF325-D830-447F-A26D-BF31BF52C821}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{175DF325-D830-447F-A26D-BF31BF52C821}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{175DF325-D830-447F-A26D-BF31BF52C821}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E655F5B1-AAB0-463D-859C-9874BCCA9970}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E655F5B1-AAB0-463D-859C-9874BCCA9970}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E655F5B1-AAB0-463D-859C-9874BCCA9970}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E655F5B1-AAB0-463D-859C-9874BCCA9970}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
