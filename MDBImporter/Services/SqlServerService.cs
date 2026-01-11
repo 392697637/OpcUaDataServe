@@ -1,4 +1,5 @@
 ﻿// Services/SqlServerService.cs
+using MDBImporter.Models;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -103,38 +104,32 @@ namespace MDBImporter.Services
         }
 
         // 记录导入历史
-        public async Task LogImportHistoryAsync(string computerName, string tableName,
-            int recordsImported, string status, string errorMessage = "",
-            string fileName = "", long fileSize = 0, int importDuration = 0)
+        public async Task LogImportHistoryAsync(ImportHistory history)
         {
             var sql = @"
-                INSERT INTO ImportHistory (
-                    ComputerName, TableName, ImportTime, RecordsImported, 
-                    Status, ErrorMessage, FileName, FileSize, ImportDuration
-                ) VALUES (
-                    @ComputerName, @TableName, @ImportTime, @RecordsImported,
-                    @Status, @ErrorMessage, @FileName, @FileSize, @ImportDuration
-                )";
-
+                INSERT INTO ImportHistory 
+                (ComputerName, TableName, ImportTime, RecordsImported,Status, ErrorMessage, FileName, FileSize, ImportDuration) 
+                VALUES 
+                (@ComputerName, @TableName, @ImportTime, @RecordsImported,@Status, @ErrorMessage, @FileName, @FileSize, @ImportDuration)";
             try
             {
                 using var connection = new SqlConnection(_connectionString);
                 using var command = new SqlCommand(sql, connection);
 
-                command.Parameters.AddWithValue("@ComputerName", computerName ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("@TableName", tableName ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@ComputerName", history.ComputerName);
+                command.Parameters.AddWithValue("@TableName", history.TableName);
                 command.Parameters.AddWithValue("@ImportTime", DateTime.Now);
-                command.Parameters.AddWithValue("@RecordsImported", recordsImported);
-                command.Parameters.AddWithValue("@Status", status ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("@ErrorMessage", errorMessage ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("@FileName", fileName ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("@FileSize", fileSize);
-                command.Parameters.AddWithValue("@ImportDuration", importDuration);
+                command.Parameters.AddWithValue("@RecordsImported", history.RecordsImported);
+                command.Parameters.AddWithValue("@Status", history.Status);
+                command.Parameters.AddWithValue("@ErrorMessage", history.ErrorMessage);
+                command.Parameters.AddWithValue("@FileName", history.FileName);
+                command.Parameters.AddWithValue("@FileSize", history.FileSize);
+                command.Parameters.AddWithValue("@ImportDuration", history.ImportDuration);
 
                 await connection.OpenAsync();
                 await command.ExecuteNonQueryAsync();
 
-                _logger.LogDebug("导入历史记录成功: {TableName}, {Records}条", tableName, recordsImported);
+                _logger.LogDebug("导入历史记录成功: {TableName}, {Records}条", history.TableName, history.RecordsImported);
             }
             catch (Exception ex)
             {
@@ -306,168 +301,182 @@ namespace MDBImporter.Services
         }
 
 
-     
 
-            // 删除所有导入的表
-            public async Task<int> DeleteAllImportTablesAsync()
+
+        // 删除所有导入的表
+        public async Task<int> DeleteAllImportTablesAsync()
+        {
+            var deletedCount = 0;
+
+            try
             {
-                var deletedCount = 0;
+                _logger.LogInformation("开始删除所有导入的表...");
 
-                try
-                {
-                    _logger.LogInformation("开始删除所有导入的表...");
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
 
-                    using var connection = new SqlConnection(_connectionString);
-                    await connection.OpenAsync();
-
-                    // 获取所有导入的表（根据命名模式）
-                    var sql = @"
+                // 获取所有导入的表（根据命名模式）
+                var sql = @"
                 SELECT TABLE_NAME 
                 FROM INFORMATION_SCHEMA.TABLES 
                 WHERE TABLE_TYPE = 'BASE TABLE' 
                 AND TABLE_NAME NOT IN ('ImportHistory')  -- 排除历史表
                 ORDER BY TABLE_NAME";
 
-                    var tablesToDelete = new List<string>();
+                var tablesToDelete = new List<string>();
 
-                    using (var command = new SqlCommand(sql, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
-                    {
-                        while (await reader.ReadAsync())
-                        {
-                            tablesToDelete.Add(reader["TABLE_NAME"].ToString());
-                        }
-                    }
-
-                    if (tablesToDelete.Count == 0)
-                    {
-                        _logger.LogInformation("没有找到要删除的导入表");
-                        return 0;
-                    }
-
-                    _logger.LogInformation($"找到 {tablesToDelete.Count} 个导入表需要删除");
-
-                    // 禁用外键约束（如果需要）
-                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
-
-                    // 删除表
-                    foreach (var table in tablesToDelete)
-                    {
-                        try
-                        {
-                            var dropSql = $"DROP TABLE [{table}]";
-                            using var dropCommand = new SqlCommand(dropSql, connection);
-                            await dropCommand.ExecuteNonQueryAsync();
-
-                            deletedCount++;
-                            _logger.LogInformation($"已删除表: {table}");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"删除表失败 {table}");
-                        }
-                    }
-
-                    // 重新启用外键约束
-                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
-
-                    _logger.LogInformation($"删除完成，共删除 {deletedCount} 个表");
-
-                    // 记录删除历史
-                    await LogImportHistoryAsync("SYSTEM", "ALL_TABLES", 0, "Deleted",
-                        $"删除了 {deletedCount} 个导入表", "SystemOperation", 0, 0);
-                }
-                catch (Exception ex)
+                using (var command = new SqlCommand(sql, connection))
+                using (var reader = await command.ExecuteReaderAsync())
                 {
-                    _logger.LogError(ex, "删除所有导入表失败");
-                    throw;
+                    while (await reader.ReadAsync())
+                    {
+                        tablesToDelete.Add(reader["TABLE_NAME"].ToString());
+                    }
                 }
 
-                return deletedCount;
+                if (tablesToDelete.Count == 0)
+                {
+                    _logger.LogInformation("没有找到要删除的导入表");
+                    return 0;
+                }
+
+                _logger.LogInformation($"找到 {tablesToDelete.Count} 个导入表需要删除");
+
+                // 禁用外键约束（如果需要）
+                await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
+
+                // 删除表
+                foreach (var table in tablesToDelete)
+                {
+                    try
+                    {
+                        var dropSql = $"DROP TABLE [{table}]";
+                        using var dropCommand = new SqlCommand(dropSql, connection);
+                        await dropCommand.ExecuteNonQueryAsync();
+
+                        deletedCount++;
+                        _logger.LogInformation($"已删除表: {table}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"删除表失败 {table}");
+                    }
+                }
+
+                // 重新启用外键约束
+                await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
+
+                _logger.LogInformation($"删除完成，共删除 {deletedCount} 个表");
+                var history = new ImportHistory();
+                history.ComputerName = "SYSTEM";
+                history.TableName = "ALL_TABLES";
+                history.ImportTime = DateTime.Now;
+                history.RecordsImported = deletedCount;
+                history.Status = "SystemOperation";
+                history.ErrorMessage = string.Empty;
+                history.FileName = string.Empty;
+                history.FileSize = string.Empty;
+                history.ImportDuration = string.Empty;
+                // 记录删除历史
+                await LogImportHistoryAsync(history);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除所有导入表失败");
+                throw;
             }
 
-            // 清空所有导入的表（只清空数据，保留表结构）
-            public async Task<int> TruncateAllImportTablesAsync()
+            return deletedCount;
+        }
+
+        // 清空所有导入的表（只清空数据，保留表结构）
+        public async Task<int> TruncateAllImportTablesAsync()
+        {
+            var truncatedCount = 0;
+
+            try
             {
-                var truncatedCount = 0;
+                _logger.LogInformation("开始清空所有导入的表...");
 
-                try
-                {
-                    _logger.LogInformation("开始清空所有导入的表...");
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
 
-                    using var connection = new SqlConnection(_connectionString);
-                    await connection.OpenAsync();
-
-                    // 获取所有导入的表
-                    var sql = @"
+                // 获取所有导入的表
+                var sql = @"
                 SELECT TABLE_NAME 
                 FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_TYPE = 'BASE TABLE' 
-                AND TABLE_NAME NOT IN ('ImportHistory')
-                ORDER BY TABLE_NAME";
+                WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME NOT IN ('ImportHistory') ORDER BY TABLE_NAME";
 
-                    var tablesToTruncate = new List<string>();
+                var tablesToTruncate = new List<string>();
 
-                    using (var command = new SqlCommand(sql, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
-                    {
-                        while (await reader.ReadAsync())
-                        {
-                            tablesToTruncate.Add(reader["TABLE_NAME"].ToString());
-                        }
-                    }
-
-                    if (tablesToTruncate.Count == 0)
-                    {
-                        _logger.LogInformation("没有找到要清空的导入表");
-                        return 0;
-                    }
-
-                    _logger.LogInformation($"找到 {tablesToTruncate.Count} 个导入表需要清空");
-
-                    // 禁用外键约束
-                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
-
-                    // 清空表
-                    foreach (var table in tablesToTruncate)
-                    {
-                        try
-                        {
-                            var truncateSql = $"TRUNCATE TABLE [{table}]";
-                            using var truncateCommand = new SqlCommand(truncateSql, connection);
-                            await truncateCommand.ExecuteNonQueryAsync();
-
-                            truncatedCount++;
-                            _logger.LogInformation($"已清空表: {table}");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"清空表失败 {table}");
-                        }
-                    }
-
-                    // 重新启用外键约束
-                    await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
-
-                    _logger.LogInformation($"清空完成，共清空 {truncatedCount} 个表");
-
-                    // 记录清空历史
-                    await LogImportHistoryAsync("SYSTEM", "ALL_TABLES", 0, "Truncated",
-                        $"清空了 {truncatedCount} 个导入表", "SystemOperation", 0, 0);
-                }
-                catch (Exception ex)
+                using (var command = new SqlCommand(sql, connection))
+                using (var reader = await command.ExecuteReaderAsync())
                 {
-                    _logger.LogError(ex, "清空所有导入表失败");
-                    throw;
+                    while (await reader.ReadAsync())
+                    {
+                        tablesToTruncate.Add(reader["TABLE_NAME"].ToString());
+                    }
                 }
 
-                return truncatedCount;
+                if (tablesToTruncate.Count == 0)
+                {
+                    _logger.LogInformation("没有找到要清空的导入表");
+                    return 0;
+                }
+
+                _logger.LogInformation($"找到 {tablesToTruncate.Count} 个导入表需要清空");
+
+                // 禁用外键约束
+                await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'");
+
+                // 清空表
+                foreach (var table in tablesToTruncate)
+                {
+                    try
+                    {
+                        var truncateSql = $"TRUNCATE TABLE [{table}]";
+                        using var truncateCommand = new SqlCommand(truncateSql, connection);
+                        await truncateCommand.ExecuteNonQueryAsync();
+
+                        truncatedCount++;
+                        _logger.LogInformation($"已清空表: {table}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"清空表失败 {table}");
+                    }
+                }
+
+                // 重新启用外键约束
+                await ExecuteNonQueryAsync("EXEC sp_msforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL'");
+
+                _logger.LogInformation($"清空完成，共清空 {truncatedCount} 个表");
+                var history = new ImportHistory();
+                history.ComputerName = "SYSTEM";
+                history.TableName = "ALL_TABLES";
+                history.ImportTime = DateTime.Now;
+                history.RecordsImported = truncatedCount;
+                history.Status = "Truncated";
+                history.ErrorMessage = string.Empty;
+                history.FileName = string.Empty;
+                history.FileSize = string.Empty;
+                history.ImportDuration = string.Empty;
+                // 记录清空历史
+                await LogImportHistoryAsync(history);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "清空所有导入表失败");
+                throw;
             }
 
-            // 获取导入表的统计信息
-            public async Task<DataTable> GetImportTablesStatisticsAsync()
-            {
-                var sql = @"
+            return truncatedCount;
+        }
+
+        // 获取导入表的统计信息
+        public async Task<DataTable> GetImportTablesStatisticsAsync()
+        {
+            var sql = @"
             SELECT 
                 t.name AS TableName,
                 p.rows AS RowCounts,
@@ -496,48 +505,48 @@ namespace MDBImporter.Services
             GROUP BY t.name, p.rows
             ORDER BY TableType, TableName";
 
-                using var connection = new SqlConnection(_connectionString);
-                using var command = new SqlCommand(sql, connection);
-                using var adapter = new SqlDataAdapter(command);
-                var dataTable = new DataTable();
+            using var connection = new SqlConnection(_connectionString);
+            using var command = new SqlCommand(sql, connection);
+            using var adapter = new SqlDataAdapter(command);
+            var dataTable = new DataTable();
 
-                await connection.OpenAsync();
-                adapter.Fill(dataTable);
+            await connection.OpenAsync();
+            adapter.Fill(dataTable);
 
-                _logger.LogInformation("获取导入表统计: {Count}个表", dataTable.Rows.Count);
-                return dataTable;
-            }
+            _logger.LogInformation("获取导入表统计: {Count}个表", dataTable.Rows.Count);
+            return dataTable;
+        }
 
-            // 检查是否有导入表
-            public async Task<bool> HasImportTablesAsync()
-            {
-                var sql = @"
+        // 检查是否有导入表
+        public async Task<bool> HasImportTablesAsync()
+        {
+            var sql = @"
             SELECT COUNT(*) 
             FROM INFORMATION_SCHEMA.TABLES 
             WHERE TABLE_TYPE = 'BASE TABLE' 
             AND TABLE_NAME NOT IN ('ImportHistory')";
 
-                try
-                {
-                    using var connection = new SqlConnection(_connectionString);
-                    using var command = new SqlCommand(sql, connection);
-
-                    await connection.OpenAsync();
-                    var result = await command.ExecuteScalarAsync();
-
-                    return Convert.ToInt32(result) > 0;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "检查导入表是否存在失败");
-                    return false;
-                }
-            }
-
-            // 获取导入表的详细信息
-            public async Task<DataTable> GetImportTablesDetailsAsync()
+            try
             {
-                var sql = @"
+                using var connection = new SqlConnection(_connectionString);
+                using var command = new SqlCommand(sql, connection);
+
+                await connection.OpenAsync();
+                var result = await command.ExecuteScalarAsync();
+
+                return Convert.ToInt32(result) > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检查导入表是否存在失败");
+                return false;
+            }
+        }
+
+        // 获取导入表的详细信息
+        public async Task<DataTable> GetImportTablesDetailsAsync()
+        {
+            var sql = @"
             SELECT 
                 t.TABLE_NAME,
                 t.TABLE_TYPE,
@@ -591,20 +600,20 @@ namespace MDBImporter.Services
             AND t.TABLE_NAME NOT IN ('ImportHistory')
             ORDER BY t.TABLE_NAME";
 
-                using var connection = new SqlConnection(_connectionString);
-                using var command = new SqlCommand(sql, connection);
-                using var adapter = new SqlDataAdapter(command);
-                var dataTable = new DataTable();
+            using var connection = new SqlConnection(_connectionString);
+            using var command = new SqlCommand(sql, connection);
+            using var adapter = new SqlDataAdapter(command);
+            var dataTable = new DataTable();
 
-                await connection.OpenAsync();
-                adapter.Fill(dataTable);
+            await connection.OpenAsync();
+            adapter.Fill(dataTable);
 
-                return dataTable;
-            }
+            return dataTable;
+        }
 
 
-            // 检查表是否存在
-            public async Task<bool> TableExistsAsync(string tableName)
+        // 检查表是否存在
+        public async Task<bool> TableExistsAsync(string tableName)
         {
             var sql = @"
                 SELECT COUNT(*) 

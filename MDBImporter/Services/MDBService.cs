@@ -1,5 +1,6 @@
 ﻿// Services/MDBService.cs
 using MDBImporter.Core;
+using MDBImporter.Models;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System;
@@ -93,11 +94,18 @@ namespace MDBImporter.Services
         }
 
         // 从MDB导入数据到SQL Server
-        public async Task<int> ImportDataFromMDBAsync(string mdbPath, string tableName,
-            string sqlServerTableName, string computerName)
+        public async Task<int> ImportDataFromMDBAsync(string mdbPath, string tableName, string sqlServerTableName, string computerName)
         {
             var recordsImported = 0;
+            var history = new ImportHistory();
+            history.ComputerName = computerName;
+            history.TableName = sqlServerTableName;
+            history.ImportTime = DateTime.Now;
 
+            history.ErrorMessage = string.Empty;
+            history.FileName = string.Empty;
+            history.FileSize = string.Empty;
+            history.ImportDuration = string.Empty;
             try
             {
                 var connectionString = _providerHelper.GetConnectionString(mdbPath);
@@ -128,10 +136,10 @@ namespace MDBImporter.Services
 
                 // 批量插入数据
                 recordsImported = await BulkInsertDataAsync(reader, sqlServerTableName);
-
+                history.RecordsImported = recordsImported;
+                history.Status = "Success";
                 // 记录导入历史
-                await _sqlServerService.LogImportHistoryAsync(computerName, sqlServerTableName,
-                    recordsImported, "Success");
+                await _sqlServerService.LogImportHistoryAsync(history);
 
                 _logger.LogInformation($"成功导入 {recordsImported} 条记录到表 {sqlServerTableName}");
                 return recordsImported;
@@ -139,8 +147,10 @@ namespace MDBImporter.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"导入失败: {mdbPath} -> {tableName}");
-                await _sqlServerService.LogImportHistoryAsync(computerName, sqlServerTableName,
-                    0, "Failed", ex.Message);
+                history.RecordsImported = 0;
+                history.Status = "Failed";
+                history.ErrorMessage = ex.Message;
+                await _sqlServerService.LogImportHistoryAsync(history);
                 return 0;
             }
         }

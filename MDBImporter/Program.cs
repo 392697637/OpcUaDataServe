@@ -612,9 +612,7 @@ namespace MDBImporter
             var sqlConnectionString = _configHelper.GetSqlServerConnectionString();
             using var connection = new SqlConnection(sqlConnectionString);
 
-            var historySql = @"
-                SELECT TOP 20 
-                    ComputerName, TableName, ImportTime, RecordsImported, Status, ErrorMessage
+            var historySql = @"SELECT ComputerName, TableName, ImportTime, RecordsImported, Status, ErrorMessage
                 FROM ImportHistory
                 ORDER BY ImportTime DESC";
 
