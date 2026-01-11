@@ -1,14 +1,16 @@
 ﻿// Services/MDBService.cs
+using MDBImporter.Core;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Data.OleDb;
 using System.Data.Common;
+using System.Data.OleDb;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
-using MDBImporter.Core;
 
 namespace MDBImporter.Services
 {
@@ -118,10 +120,13 @@ namespace MDBImporter.Services
                     throw new Exception($"表 {tableName} 没有数据或不存在");
                 }
 
-                // 创建SQL Server表（如果不存在）
-                await CreateTableInSqlServerAsync(schemaTable, sqlServerTableName);
+                // 获取MDB表的主键信息
+                var primaryKeys = await GetMDBPrimaryKeysAsync(mdbConnection, tableName);
 
-                // 批量插入数据 - 修复：传入 DbDataReader
+                // 创建SQL Server表（如果不存在），包含主键
+                await CreateTableInSqlServerAsync(schemaTable, sqlServerTableName, primaryKeys);
+
+                // 批量插入数据
                 recordsImported = await BulkInsertDataAsync(reader, sqlServerTableName);
 
                 // 记录导入历史
@@ -139,9 +144,396 @@ namespace MDBImporter.Services
                 return 0;
             }
         }
+        // 获取MDB表的主键信息（修复版）
+        private async Task<List<string>> GetMDBPrimaryKeysAsync(OleDbConnection connection, string tableName)
+        {
+            var primaryKeys = new List<string>();
 
+            try
+            {
+                // 方法1: 使用 OleDbConnection.GetSchema 的特定方法获取主键
+                DataTable primaryKeyInfo = null;
+
+                try
+                {
+                    // 尝试使用不同的方法获取主键信息
+                    primaryKeyInfo = connection.GetOleDbSchemaTable(OleDbSchemaGuid.Primary_Keys, new object[] { null, null, tableName });
+                }
+                catch (Exception)
+                {
+                    // 如果上面的方法失败，尝试其他方法
+                }
+
+                if (primaryKeyInfo != null && primaryKeyInfo.Rows.Count > 0)
+                {
+                    // 方法1成功: 使用 OleDbSchemaGuid.Primary_Keys
+                    foreach (DataRow row in primaryKeyInfo.Rows)
+                    {
+                        var columnName = row["COLUMN_NAME"].ToString();
+                        if (!string.IsNullOrEmpty(columnName))
+                        {
+                            primaryKeys.Add(columnName);
+                        }
+                    }
+                }
+                else
+                {
+                    // 方法2: 使用索引信息推断主键
+                    try
+                    {
+                        var indexInfo = connection.GetOleDbSchemaTable(OleDbSchemaGuid.Indexes, new object[] { null, null, null, null, tableName });
+
+                        if (indexInfo != null)
+                        {
+                            var primaryIndexRows = indexInfo.AsEnumerable()
+                                .Where(row => row.Field<bool>("PRIMARY_KEY") == true)
+                                .OrderBy(row => row.Field<short>("ORDINAL_POSITION"));
+
+                            foreach (var row in primaryIndexRows)
+                            {
+                                var columnName = row["COLUMN_NAME"].ToString();
+                                if (!string.IsNullOrEmpty(columnName))
+                                {
+                                    primaryKeys.Add(columnName);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // 继续尝试其他方法
+                    }
+                }
+
+                // 如果上述方法都失败，尝试使用 ADOX COM 对象（需要引用 Microsoft ADO Ext）
+                if (primaryKeys.Count == 0)
+                {
+                    primaryKeys = await GetPrimaryKeysUsingAdoxAsync(connection.DataSource, tableName);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"获取表 {tableName} 的主键信息失败: {ex.Message}");
+            }
+
+            return primaryKeys;
+        }
+
+        // 使用 ADOX COM 对象获取主键（更可靠的方法）
+        private async Task<List<string>> GetPrimaryKeysUsingAdoxAsync(string mdbPath, string tableName)
+        {
+            var primaryKeys = new List<string>();
+
+            try
+            {
+                // 注意: 需要在项目中引用 Microsoft ADO Ext. 2.8 for DDL and Security
+                // 或者使用动态调用
+
+                await Task.Run(() =>
+                {
+                    dynamic catalog = null;
+                    dynamic table = null;
+
+                    try
+                    {
+                        // 创建 ADOX Catalog 对象
+                        Type catalogType = Type.GetTypeFromProgID("ADOX.Catalog");
+                        if (catalogType != null)
+                        {
+                            catalog = Activator.CreateInstance(catalogType);
+
+                            // 打开 Access 数据库
+                            string connectionString = $"Provider=Microsoft.Jet.OLEDB.4.0;Data Source={mdbPath};";
+                            catalog.ActiveConnection = connectionString;
+
+                            // 查找指定的表
+                            foreach (dynamic tbl in catalog.Tables)
+                            {
+                                if (tbl.Type == "TABLE" && tbl.Name == tableName)
+                                {
+                                    table = tbl;
+                                    break;
+                                }
+                            }
+
+                            // 获取主键
+                            if (table != null && table.Indexes.Count > 0)
+                            {
+                                foreach (dynamic index in table.Indexes)
+                                {
+                                    if (index.PrimaryKey == true)
+                                    {
+                                        foreach (dynamic column in index.Columns)
+                                        {
+                                            primaryKeys.Add(column.Name);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        // 清理 COM 对象
+                        if (catalog != null)
+                        {
+                            System.Runtime.InteropServices.Marshal.ReleaseComObject(catalog);
+                        }
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"使用 ADOX 获取主键失败: {ex.Message}");
+            }
+
+            return primaryKeys;
+        }
+
+        // 备选方案：使用更简单直接的方法
+        private async Task<List<string>> GetPrimaryKeysSimpleAsync(OleDbConnection connection, string tableName)
+        {
+            var primaryKeys = new List<string>();
+
+            try
+            {
+                // 方法1: 直接查询系统表（适用于 Jet OLE DB 4.0）
+                try
+                {
+                    string query = @"
+                SELECT i.name AS IndexName, c.name AS ColumnName
+                FROM sys.indexes i
+                INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE i.is_primary_key = 1
+                  AND OBJECT_NAME(i.object_id) = @TableName
+                ORDER BY ic.key_ordinal";
+
+                    using var command = new OleDbCommand(query, connection);
+                    command.Parameters.AddWithValue("@TableName", tableName);
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        var columnName = reader["ColumnName"].ToString();
+                        if (!string.IsNullOrEmpty(columnName))
+                        {
+                            primaryKeys.Add(columnName);
+                        }
+                    }
+                }
+                catch
+                {
+                    // 如果上面的查询失败，尝试 Access 特定的系统表查询
+                    try
+                    {
+                        // 注意: Access 可能需要特殊权限才能访问 MSysObjects
+                        string query = @"
+                    SELECT MSysObjects.Name AS TableName, MSysColumns.Name AS ColumnName
+                    FROM MSysObjects 
+                    INNER JOIN MSysColumns ON MSysObjects.Id = MSysColumns.Id
+                    WHERE MSysObjects.Name = ?
+                      AND MSysObjects.Type = 1
+                      AND MSysColumns.ColumnRequired = True";
+
+                        using var command = new OleDbCommand(query, connection);
+                        command.Parameters.AddWithValue("@p1", tableName);
+
+                        using var reader = await command.ExecuteReaderAsync();
+                        while (await reader.ReadAsync())
+                        {
+                            var columnName = reader["ColumnName"].ToString();
+                            if (!string.IsNullOrEmpty(columnName))
+                            {
+                                primaryKeys.Add(columnName);
+                            }
+                        }
+                    }
+                    catch (Exception sysEx)
+                    {
+                        _logger.LogWarning($"查询系统表失败: {sysEx.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"简单方法获取主键失败: {ex.Message}");
+            }
+
+            return primaryKeys;
+        }
+
+
+        private async Task CreateTableInSqlServerAsync(DataTable schemaTable, string tableName, List<string> primaryKeys)
+        {
+            var columns = new List<string>();
+            var primaryKeyColumns = new List<string>();
+
+            foreach (DataRow row in schemaTable.Rows)
+            {
+                var columnName = row["ColumnName"].ToString();
+                var dataType = row["DataType"].ToString();
+                var maxLength = Convert.ToInt32(row["ColumnSize"]);
+                var isNullable = Convert.ToBoolean(row["AllowDBNull"]);
+                var isIdentity = false;
+
+                // 检查是否为自动编号（IDENTITY）字段
+                if (row.Table.Columns.Contains("IsAutoIncrement"))
+                {
+                    isIdentity = Convert.ToBoolean(row["IsAutoIncrement"]);
+                }
+
+                // 检查当前列是否在主键列表中
+                bool isPrimaryKey = primaryKeys.Contains(columnName, StringComparer.OrdinalIgnoreCase);
+
+                // 如果是主键列，必须设置为 NOT NULL
+                if (isPrimaryKey)
+                {
+                    isNullable = false;  // 强制设为 NOT NULL
+                    primaryKeyColumns.Add(columnName);
+                }
+
+                // 映射Access数据类型到SQL Server数据类型
+                string sqlServerType;
+                switch (dataType)
+                {
+                    case "System.String":
+                        sqlServerType = maxLength <= 8000 ? $"NVARCHAR({(maxLength > 0 ? maxLength : "MAX")})" : "NTEXT";
+                        break;
+                    case "System.Int32":
+                        sqlServerType = "INT";
+                        if (isIdentity) sqlServerType += " IDENTITY(1,1)";
+                        break;
+                    case "System.Int64":
+                        sqlServerType = "BIGINT";
+                        if (isIdentity) sqlServerType += " IDENTITY(1,1)";
+                        break;
+                    case "System.Decimal":
+                        sqlServerType = "DECIMAL(18, 2)";
+                        break;
+                    case "System.Double":
+                    case "System.Single":
+                        sqlServerType = "FLOAT";
+                        break;
+                    case "System.DateTime":
+                        sqlServerType = "DATETIME";
+                        break;
+                    case "System.Boolean":
+                        sqlServerType = "BIT";
+                        break;
+                    case "System.Byte[]":
+                        sqlServerType = "VARBINARY(MAX)";
+                        break;
+                    case "System.Guid":
+                        sqlServerType = "UNIQUEIDENTIFIER";
+                        break;
+                    default:
+                        sqlServerType = "NVARCHAR(MAX)";
+                        break;
+                }
+
+                var nullClause = isNullable ? "NULL" : "NOT NULL";
+                columns.Add($"[{columnName}] {sqlServerType} {nullClause}");
+            }
+
+            // 构建CREATE TABLE语句
+            var createTableSql = new StringBuilder();
+
+            // 先检查表是否存在
+            createTableSql.AppendLine($"IF OBJECT_ID('{tableName}', 'U') IS NULL");
+            createTableSql.AppendLine("BEGIN");
+            createTableSql.AppendLine($"    CREATE TABLE [{tableName}] (");
+            createTableSql.AppendLine($"        {string.Join(",\n        ", columns)}");
+
+            // 如果有主键，添加主键约束
+            if (primaryKeyColumns.Count > 0)
+            {
+                var pkColumns = string.Join(", ", primaryKeyColumns.Select(pk => $"[{pk}]"));
+                createTableSql.AppendLine($"        ,CONSTRAINT [PK_{tableName}] PRIMARY KEY ({pkColumns})");
+
+                _logger.LogInformation($"表 {tableName} 将创建主键: {string.Join(", ", primaryKeyColumns)}");
+            }
+            else if (primaryKeys.Count > 0)
+            {
+                // 过滤掉可能不存在的列
+                var existingColumns = schemaTable.AsEnumerable()
+                    .Select(row => row["ColumnName"].ToString())
+                    .ToList();
+
+                var validPrimaryKeys = primaryKeys
+                    .Where(pk => existingColumns.Contains(pk, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (validPrimaryKeys.Count > 0)
+                {
+                    // 记录警告：这些列是主键但允许NULL，可能需要手动修复
+                    _logger.LogWarning($"表 {tableName} 的主键列允许NULL值：{string.Join(", ", validPrimaryKeys)}");
+                    _logger.LogWarning("您可能需要手动将这些列修改为NOT NULL并添加主键约束");
+                }
+            }
+
+            createTableSql.AppendLine("    )");
+            createTableSql.AppendLine($" PRINT '表 {tableName} 创建成功'");
+            createTableSql.AppendLine("END");
+            createTableSql.AppendLine("ELSE");
+            createTableSql.AppendLine("BEGIN");
+            createTableSql.AppendLine($" PRINT '表 {tableName} 已存在，跳过创建'");
+            createTableSql.AppendLine("END");
+
+            _logger.LogDebug($"创建表SQL:\n{createTableSql}");
+
+            using var connection = new SqlConnection(_sqlServerService.GetConnectionString());
+            await connection.OpenAsync();
+
+            using var command = new SqlCommand(createTableSql.ToString(), connection);
+            await command.ExecuteNonQueryAsync();
+
+            _logger.LogInformation($"已处理表 {tableName}");
+        }
+
+        // 创建SQL Server表（包含主键）
+
+        // 备用方法：使用更直接的方式获取主键（如果上述方法不工作）
+        private async Task<List<string>> GetMDBPrimaryKeysDirectAsync(OleDbConnection connection, string tableName)
+        {
+            var primaryKeys = new List<string>();
+
+            try
+            {
+                // 使用MSysObjects系统表（仅适用于Access数据库）
+                var query = @"
+            SELECT MSysObjects.Name AS TableName, MSysObjects.Type,
+                   MSysColumns.Name AS ColumnName
+            FROM MSysObjects 
+            INNER JOIN MSysColumns ON MSysObjects.Id = MSysColumns.Id
+            WHERE MSysObjects.Name = @TableName 
+              AND MSysObjects.Type = 1
+              AND MSysColumns.ColumnRequired = True
+            ORDER BY MSysColumns.ColumnId";
+
+                using var command = new OleDbCommand(query, connection);
+                command.Parameters.AddWithValue("@TableName", tableName);
+
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var columnName = reader["ColumnName"].ToString();
+                    if (!string.IsNullOrEmpty(columnName))
+                    {
+                        primaryKeys.Add(columnName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"直接获取主键失败: {ex.Message}");
+            }
+
+            return primaryKeys;
+        }
         // 在SQL Server中创建表
-        public  async Task CreateTableInSqlServerAsync(DataTable schemaTable, string tableName)
+        public async Task CreateTableInSqlServerAsync(DataTable schemaTable, string tableName)
         {
             try
             {

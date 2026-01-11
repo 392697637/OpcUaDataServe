@@ -372,8 +372,7 @@ namespace MDBImporter
 
                         Console.Write($"      导入表 [{totalTables}]: {table} -> {sqlTableName}... ");
 
-                        var records = await _mdbService.ImportDataFromMDBAsync(
-                            file, table, sqlTableName, computer.ComputerName);
+                        var records = await _mdbService.ImportDataFromMDBAsync(file, table, sqlTableName, computer.ComputerName);
 
                         totalRecords += records;
 
