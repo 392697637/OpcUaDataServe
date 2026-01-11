@@ -71,13 +71,15 @@ namespace MDBImporter.Services
                         Id INT IDENTITY(1,1) PRIMARY KEY,
                         ComputerName NVARCHAR(100),
                         TableName NVARCHAR(200),
+                        PrimaryKey NVARCHAR(200),
                         ImportTime DATETIME,
                         RecordsImported INT,
                         Status NVARCHAR(50),
+                        PrimaryKeyData NVARCHAR(MAX),
                         ErrorMessage NVARCHAR(MAX),
                         FileName NVARCHAR(255),
-                        FileSize BIGINT,
-                        ImportDuration INT
+                        ImportDuration INT,
+                        Remark NVARCHAR(255),
                     )
                     
                     CREATE INDEX IX_ImportHistory_ImportTime ON ImportHistory(ImportTime DESC)
@@ -108,9 +110,9 @@ namespace MDBImporter.Services
         {
             var sql = @"
                 INSERT INTO ImportHistory 
-                (ComputerName, TableName, ImportTime, RecordsImported,Status, ErrorMessage, FileName, FileSize, ImportDuration) 
+                (ComputerName, TableName,PrimaryKey, ImportTime, RecordsImported,Status,PrimaryKeyData ErrorMessage, FileName, ImportDuration, Remark) 
                 VALUES 
-                (@ComputerName, @TableName, @ImportTime, @RecordsImported,@Status, @ErrorMessage, @FileName, @FileSize, @ImportDuration)";
+                (@ComputerName, @TableName,@PrimaryKey, @ImportTime, @RecordsImported,@Status,@PrimaryKeyData, @ErrorMessage, @FileName, @ImportDuration, @Remark)";
             try
             {
                 using var connection = new SqlConnection(_connectionString);
@@ -118,13 +120,16 @@ namespace MDBImporter.Services
 
                 command.Parameters.AddWithValue("@ComputerName", history.ComputerName);
                 command.Parameters.AddWithValue("@TableName", history.TableName);
+                command.Parameters.AddWithValue("@PrimaryKey", history.PrimaryKey);
                 command.Parameters.AddWithValue("@ImportTime", DateTime.Now);
                 command.Parameters.AddWithValue("@RecordsImported", history.RecordsImported);
                 command.Parameters.AddWithValue("@Status", history.Status);
+                command.Parameters.AddWithValue("@PrimaryKeyData", history.PrimaryKeyData);
                 command.Parameters.AddWithValue("@ErrorMessage", history.ErrorMessage);
                 command.Parameters.AddWithValue("@FileName", history.FileName);
-                command.Parameters.AddWithValue("@FileSize", history.FileSize);
+              
                 command.Parameters.AddWithValue("@ImportDuration", history.ImportDuration);
+                command.Parameters.AddWithValue("@Remark", history.Remark);
 
                 await connection.OpenAsync();
                 await command.ExecuteNonQueryAsync();
@@ -375,7 +380,7 @@ namespace MDBImporter.Services
                 history.Status = "SystemOperation";
                 history.ErrorMessage = string.Empty;
                 history.FileName = string.Empty;
-                history.FileSize = string.Empty;
+                history.Remark = string.Empty;
                 history.ImportDuration = string.Empty;
                 // 记录删除历史
                 await LogImportHistoryAsync(history);
@@ -454,12 +459,14 @@ namespace MDBImporter.Services
                 var history = new ImportHistory();
                 history.ComputerName = "SYSTEM";
                 history.TableName = "ALL_TABLES";
+                history.PrimaryKey = string.Empty;
                 history.ImportTime = DateTime.Now;
                 history.RecordsImported = truncatedCount;
+                history.PrimaryKeyData = string.Empty;
                 history.Status = "Truncated";
                 history.ErrorMessage = string.Empty;
                 history.FileName = string.Empty;
-                history.FileSize = string.Empty;
+                history.Remark = string.Empty;
                 history.ImportDuration = string.Empty;
                 // 记录清空历史
                 await LogImportHistoryAsync(history);

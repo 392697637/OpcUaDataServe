@@ -28,6 +28,7 @@ namespace MDBImporter
         private static FileWatcherService _fileWatcherService;
         private static LogService _logService;
         private static List<NetworkComputer> _networkComputers;
+        private static BulkCopySettings _bulkCopySettings;// 批量复制设置
         private static bool _isRunning = true;
         private static bool _isMonitoring = false;
 
@@ -136,10 +137,14 @@ namespace MDBImporter
 
                 // 获取ConfigHelper
                 _configHelper = _serviceProvider.GetRequiredService<ConfigHelper>();
+               
 
                 // 获取网络计算机配置
                 _networkComputers = _configHelper.GetNetworkComputers();
                 Console.WriteLine($"已加载 {_networkComputers.Count} 个计算机配置");
+
+                //数据库设置
+                _bulkCopySettings= _configHelper.GetBulkCopySettings();
 
                 // 获取SQL Server服务
                 _sqlServerService = _serviceProvider.GetRequiredService<SqlServerService>();
@@ -149,6 +154,7 @@ namespace MDBImporter
 
                 // 获取MDBService
                 _mdbService = _serviceProvider.GetRequiredService<MDBService>();
+                _mdbService.SetBulkCopySettings(_bulkCopySettings);
 
                 // 测试数据库连接
                 Console.Write("测试SQL Server连接... ");

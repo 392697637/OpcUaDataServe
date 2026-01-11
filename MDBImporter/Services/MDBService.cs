@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Data;
 using System.Data.Common;
 using System.Data.OleDb;
@@ -20,6 +21,7 @@ namespace MDBImporter.Services
         private readonly SqlServerService _sqlServerService;
         private readonly ProviderHelper _providerHelper;
         private readonly ILogger<MDBService> _logger;
+        private BulkCopySettings _bulkCopySettings = new BulkCopySettings();
 
         public MDBService(SqlServerService sqlServerService,
                          ProviderHelper providerHelper,
@@ -100,11 +102,12 @@ namespace MDBImporter.Services
             var history = new ImportHistory();
             history.ComputerName = computerName;
             history.TableName = sqlServerTableName;
+            history.PrimaryKey = string.Empty;
+            history.PrimaryKeyData = string.Empty;
             history.ImportTime = DateTime.Now;
-
             history.ErrorMessage = string.Empty;
-            history.FileName = string.Empty;
-            history.FileSize = string.Empty;
+            history.FileName = Path.GetFileName(mdbPath);
+            history.Remark = string.Empty;
             history.ImportDuration = string.Empty;
             try
             {
@@ -130,12 +133,25 @@ namespace MDBImporter.Services
 
                 // 获取MDB表的主键信息
                 var primaryKeys = await GetMDBPrimaryKeysAsync(mdbConnection, tableName);
+                history.PrimaryKey = string.Join(",", primaryKeys);
 
                 // 创建SQL Server表（如果不存在），包含主键
                 await CreateTableInSqlServerAsync(schemaTable, sqlServerTableName, primaryKeys);
-
+                history.PrimaryKeyData = string.Empty;
                 // 批量插入数据
                 recordsImported = await BulkInsertDataAsync(reader, sqlServerTableName);
+
+                var row = await GetLastInsertedRecordAsync( sqlServerTableName, history.PrimaryKey);
+                if (row != null)
+                {
+                    List<string> list = new List<string>();
+                    foreach (var item in primaryKeys)
+                    {
+                        list.Add(row["DID"].ToString());
+                    }
+                    history.PrimaryKeyData = string.Join(",", list);
+                }
+               
                 history.RecordsImported = recordsImported;
                 history.Status = "Success";
                 // 记录导入历史
@@ -579,47 +595,107 @@ namespace MDBImporter.Services
         {
             var recordsImported = 0;
             var sqlConnectionString = _sqlServerService.GetConnectionString();
-
             if (string.IsNullOrEmpty(sqlConnectionString))
             {
                 _logger.LogError("SQL Server连接字符串为空");
                 return 0;
             }
+            using var sqlConnection = new SqlConnection(sqlConnectionString);
+            await sqlConnection.OpenAsync();
+            // 使用事务确保数据一致性
+            using var transaction = await sqlConnection.BeginTransactionAsync();
+            try
+            {
+                using var bulkCopy = new SqlBulkCopy(sqlConnection, SqlBulkCopyOptions.Default, (SqlTransaction)transaction)
+                {
+                    DestinationTableName = tableName,
+                    BatchSize = _bulkCopySettings.BatchSize, // ← 批次大小  
+                    BulkCopyTimeout = _bulkCopySettings.TimeoutSeconds,  // ← 超时时间（秒）
+                    EnableStreaming = _bulkCopySettings.EnableStreaming, // ← 启用流式传输
+                    NotifyAfter = _bulkCopySettings.NotifyAfter // ← 每插入多少行触发一次事件
+                };
+                // 映射列
+                var schemaTable = reader.GetSchemaTable();
+                if (schemaTable != null)
+                {
+                    foreach (DataRow row in schemaTable.Rows)
+                    {
+                        var columnName = row["ColumnName"].ToString();
+                        bulkCopy.ColumnMappings.Add(columnName, columnName);
+                    }
+                }
+                bulkCopy.SqlRowsCopied += (sender, e) =>
+                {
+                    _logger.LogInformation($"已导入 {e.RowsCopied} 条记录");
+                };
+                await bulkCopy.WriteToServerAsync(reader);
+                recordsImported = (int)bulkCopy.RowsCopied;
+                await transaction.CommitAsync();
+                _logger.LogInformation($"批量插入完成: {tableName}, 共导入 {recordsImported} 条记录");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, $"批量插入失败: {tableName}");
+                throw new InvalidOperationException($"批量插入失败: {tableName}", ex);
+            }
+            finally
+            {
+                if (!reader.IsClosed) // 确保reader关闭
+                    reader.Close();
+            }
+            return recordsImported;
+        }
+
+
+
+        // 获取最后一次批量插入的数据记录（根据主键）
+        private async Task<DataRow?> GetLastInsertedRecordAsync(string tableName, string primaryKeyColumn)
+        {
+            var sqlConnectionString = _sqlServerService.GetConnectionString();
+
+            if (string.IsNullOrEmpty(sqlConnectionString))
+            {
+                _logger.LogError("SQL Server连接字符串为空");
+                return null;
+            }
 
             using var sqlConnection = new SqlConnection(sqlConnectionString);
             await sqlConnection.OpenAsync();
 
-            using var bulkCopy = new SqlBulkCopy(sqlConnection)
-            {
-                DestinationTableName = tableName,
-                BatchSize = 1000,  // ← 批次大小
-                BulkCopyTimeout = 300  // ← 超时时间（秒）
-            };
-
-            // 映射列 - 从reader获取列信息
-            var schemaTable = reader.GetSchemaTable();
-            if (schemaTable != null)
-            {
-                foreach (DataRow row in schemaTable.Rows)
-                {
-                    var columnName = row["ColumnName"].ToString();
-                    bulkCopy.ColumnMappings.Add(columnName, columnName);
-                }
-            }
-
             try
             {
-                // 使用 WriteToServerAsync 处理 DbDataReader
-                await bulkCopy.WriteToServerAsync(reader);
-                recordsImported = bulkCopy.RowsCopied;
+                // 使用查询获取最后一条记录（假设主键是自增或时间戳等可排序的）
+                var query = $"SELECT TOP 1 * FROM {tableName} ORDER BY {primaryKeyColumn} DESC";
+
+                //using var command = new SqlCommand(query, sqlConnection);
+                //using var reader = await command.ExecuteReaderAsync();
+
+                //if (await reader.ReadAsync())
+                //{
+                //    var dataTable = new DataTable();
+                //    dataTable.Load(reader);
+                //    return dataTable.Rows[0];
+                //}
+
+                using var command = new SqlCommand(query, sqlConnection);
+                using var adapter = new SqlDataAdapter(command);
+
+                var dataTable = new DataTable();
+                adapter.Fill(dataTable);
+
+                if (dataTable.Rows.Count > 0)
+                {
+                    return dataTable.Rows[0];
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"批量插入失败: {tableName}");
-                throw;
+                _logger.LogError(ex, $"获取最后插入记录失败: {tableName}");
+                throw new InvalidOperationException($"获取最后插入记录失败: {tableName}", ex);
             }
 
-            return recordsImported;
+            return null;
         }
 
         // 转换数据类型
@@ -752,6 +828,11 @@ namespace MDBImporter.Services
             }
 
             return dataTable;
+        }
+
+        internal void SetBulkCopySettings(BulkCopySettings bulkCopySettings)
+        {
+            _bulkCopySettings = bulkCopySettings;
         }
     }
 

@@ -26,6 +26,10 @@ namespace MDBImporter.Models
         /// </summary>
         public string TableName { get; set; } = string.Empty;
         /// <summary>
+        /// 表结构主键
+        /// </summary>
+        public string PrimaryKey { get; set; } = string.Empty;
+        /// <summary>
         ///含义：导入任务开始执行的时间戳。
         ///作用：记录操作发生的具体时间，用于排序、排查问题和生成报告。
         /// </summary>
@@ -43,6 +47,10 @@ namespace MDBImporter.Models
         /// </summary>
         public string Status { get; set; } = string.Empty;
         /// <summary>
+        /// 表结构主键数据
+        /// </summary>
+        public string PrimaryKeyData { get; set; } = string.Empty;
+        /// <summary>
         ///含义：当Status为“失败”或“部分成功”时，存储详细的错误信息或异常内容。
         ///作用：用于问题诊断和错误分析。成功时此字段通常为NULL或空字符串。
         /// </summary>
@@ -53,14 +61,13 @@ namespace MDBImporter.Models
         /// </summary>
         public string FileName { get; set; } = string.Empty;
         /// <summary>
-        ///含义：被导入的源文件的大小。 单位：通常是字节。
-        ///作用：用于性能分析、监控文件大小趋势，或作为导入任务规模的参考指标。
-        /// </summary>
-        public string FileSize { get; set; } = string.Empty;
-        /// <summary>
         ///含义：完成整个导入过程所花费的时间。单位：通常是毫秒或秒。
         ///作用：监控导入性能的核心指标。通过分析此时间，可以评估系统效率、发现性能瓶颈。
         /// </summary>
         public string ImportDuration { get; set; } = string.Empty;
+        /// <summary>
+        ///说明
+        /// </summary>
+        public string Remark { get; set; } = string.Empty;
     }
 }

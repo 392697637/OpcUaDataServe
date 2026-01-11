@@ -1,5 +1,4 @@
-﻿// Helpers/ConfigHelper.cs
-using MDBImporter.Models;
+﻿using MDBImporter.Models;
 using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
@@ -30,6 +29,12 @@ namespace MDBImporter.Helpers
         {
             var computers = new List<NetworkComputer>();
             _configuration.GetSection("ApplicationSettings:NetworkComputers").Bind(computers);
+            return computers;
+        }
+        public BulkCopySettings GetBulkCopySettings()
+        {
+            var computers = new BulkCopySettings();
+            _configuration.GetSection("ApplicationSettings:BulkCopySettings").Bind(computers);
             return computers;
         }
 
